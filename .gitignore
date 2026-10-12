@@ -1,0 +1,26 @@
+# Build outputs
+*.exe
+*.zip
+*.pdb
+*.dll
+
+# Local test and preview outputs
+安全回归测试_*/
+验证结果/
+编译日志/
+*.tmp
+
+# Local credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+client_secret*.json
+
+# Per-user data and caches
+records.json
+records.json.bak
