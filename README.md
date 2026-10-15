@@ -19,20 +19,23 @@ Windows 单机版每日数量记录工具，支持历史记录按月折叠、周
 
 ## 构建
 
-要求：Windows、PowerShell、.NET Framework 4.8 或更高版本。
+要求：仍在微软安全支持期内的 Windows 11、PowerShell、.NET Framework 4.8.1，并通过 Windows Update 安装最新安全更新。
 
 ```powershell
 .\编译.ps1
 ```
 
-默认生成 `每日果效记录_实际天数版.exe`。
+默认生成：
+
+- `每日果效记录_实际天数版.exe`：正式主程序，不包含自测入口或测试类。
+- `DailyTracker.Tests.exe`：仅用于本地回归验证，不进入发布包。
 
 ## 运行回归测试
 
-先运行构建，再执行：
+先运行构建，再使用测试程序执行：
 
 ```powershell
-$exe = '.\每日果效记录_实际天数版.exe'
+$exe = '.\DailyTracker.Tests.exe'
 & $exe --self-test '.\验证结果\core'
 & $exe --photo-self-test '.\验证结果\photo'
 & $exe --settings-self-test '.\验证结果\settings'

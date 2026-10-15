@@ -123,8 +123,29 @@ namespace MuYu.DailyTracker
         public const int MaxDataBytes = 16 * 1024 * 1024;
         public const int MaxRecords = 20000;
         public readonly string FilePath;
-        public RecordStore(string filePath) { FilePath = filePath; }
-        private static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength = 16000000 }; }
+        public RecordStore(string filePath) { FilePath = Path.GetFullPath(filePath); }
+        private static JavaScriptSerializer Serializer()
+        { return new JavaScriptSerializer { MaxJsonLength = MaxDataBytes, RecursionLimit = 32 }; }
+        private static string ReadDataFile(string path)
+        {
+            using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (input.Length > MaxDataBytes) throw new InvalidDataException("数据文件超过 16 MB 安全限制。");
+                int expected = checked((int)input.Length);
+                byte[] bytes = new byte[expected];
+                int read = 0;
+                while (read < expected)
+                {
+                    int count = input.Read(bytes, read, expected - read);
+                    if (count == 0) throw new InvalidDataException("数据文件读取期间发生变化，请重试。");
+                    read += count;
+                }
+                if (input.ReadByte() != -1) throw new InvalidDataException("数据文件读取期间发生变化，请重试。");
+                int offset = read >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+                try { return new UTF8Encoding(false, true).GetString(bytes, offset, read - offset); }
+                catch (DecoderFallbackException) { throw new InvalidDataException("数据文件不是有效的 UTF-8 文本。"); }
+            }
+        }
         public static void Validate(Database db)
         {
             if (db == null || db.Version != 1 || db.Records == null || db.Records.Count > MaxRecords)
@@ -169,24 +190,29 @@ namespace MuYu.DailyTracker
                 if (File.Exists(FilePath + ".bak")) throw new InvalidDataException("主数据文件缺失，但检测到备份。请先恢复备份，避免覆盖已有数据。");
                 return new Database();
             }
-            if (new FileInfo(FilePath).Length > MaxDataBytes) throw new InvalidDataException("数据文件超过 16 MB 安全限制。");
-            Database db = Serializer().Deserialize<Database>(File.ReadAllText(FilePath, Encoding.UTF8));
+            Database db = Serializer().Deserialize<Database>(ReadDataFile(FilePath));
             Validate(db);
             return db;
         }
         public void Save(Database db)
         {
             Validate(db);
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-            string temporary = FilePath + ".tmp";
+            string directory = Path.GetDirectoryName(FilePath);
+            Directory.CreateDirectory(directory);
+            string temporary = Path.Combine(directory, "." + Path.GetFileName(FilePath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
             byte[] bytes = new UTF8Encoding(false).GetBytes(Serializer().Serialize(db));
-            using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            if (bytes.Length > MaxDataBytes) throw new InvalidDataException("数据文件超过 16 MB 安全限制。");
+            try
             {
-                output.Write(bytes, 0, bytes.Length);
-                output.Flush(true);
+                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    output.Write(bytes, 0, bytes.Length);
+                    output.Flush(true);
+                }
+                if (File.Exists(FilePath)) File.Replace(temporary, FilePath, FilePath + ".bak");
+                else File.Move(temporary, FilePath);
             }
-            if (File.Exists(FilePath)) File.Replace(temporary, FilePath, FilePath + ".bak");
-            else File.Move(temporary, FilePath);
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
         public static DayRecord Find(Database db, DateTime day)
         {
@@ -750,24 +776,27 @@ namespace MuYu.DailyTracker
 
     public static class Program
     {
+#if SELF_TESTS
         private static void PreparePreview(Control control)
         {
             IntPtr handle = control.Handle;
             foreach (Control child in control.Controls) PreparePreview(child);
             control.PerformLayout();
         }
+#endif
         [STAThread]
         public static int Main(string[] args)
         {
+#if SELF_TESTS
             if (args.Length > 0 && args[0] == "--self-test") return SelfTests.Run(args.Length > 1 ? args[1] : ".");
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-            if (args.Length > 0 && args[0] == "--photo-self-test") return PhotoTests.Run(args[1]);
-            if (args.Length > 0 && args[0] == "--settings-self-test") return SettingsTests.Run(args[1]);
-            if (args.Length > 0 && args[0] == "--settlement-self-test") return SettlementTests.Run(args[1]);
-            if (args.Length > 0 && args[0] == "--ui-self-test") return SelfTests.RunUi(args[1]);
+            if (args.Length > 0 && args[0] == "--photo-self-test") return PhotoTests.Run(args.Length > 1 ? args[1] : ".");
+            if (args.Length > 0 && args[0] == "--settings-self-test") return SettingsTests.Run(args.Length > 1 ? args[1] : ".");
+            if (args.Length > 0 && args[0] == "--settlement-self-test") return SettlementTests.Run(args.Length > 1 ? args[1] : ".");
+            if (args.Length > 0 && args[0] == "--ui-self-test") return SelfTests.RunUi(args.Length > 1 ? args[1] : ".");
             if (args.Length > 0 && args[0] == "--render-preview")
             {
-                string directory = Path.GetFullPath(args[1]); Directory.CreateDirectory(directory);
+                string directory = Path.GetFullPath(args.Length > 1 ? args[1] : "."); Directory.CreateDirectory(directory);
                 var db = new Database();
                 RecordStore.Put(db, DateTime.Today.AddDays(-2), 8, 12, 15);
                 RecordStore.Put(db, DateTime.Today.AddDays(-1), 6, 14, 20);
@@ -784,6 +813,9 @@ namespace MuYu.DailyTracker
                 }
                 return 0;
             }
+#else
+            Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+#endif
             bool first;
             using (var mutex = new Mutex(true, "Local\\MuYuDailyTracker_v1", out first))
             {
@@ -806,10 +838,12 @@ namespace MuYu.DailyTracker
         }
     }
 
+#if SELF_TESTS
     public static class SelfTests
     {
         private static int passed;
         private static void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); passed++; }
+        private static bool Rejects(Action action) { try { action(); return false; } catch { return true; } }
         private static object Field(object instance, string name)
         {
             return instance.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(instance);
@@ -942,6 +976,23 @@ namespace MuYu.DailyTracker
                 Check(RecordStore.Find(store.Load(), end).Complex == 11, "Atomic update persists");
                 Check(File.Exists(store.FilePath + ".bak") && RecordStore.Find(new RecordStore(store.FilePath + ".bak").Load(), end).Complex == 7, "Backup preserves previous save");
                 store.Save(db); Check(store.Load().Records.Count == db.Records.Count, "Repeated replacement with backup");
+                string hardenedRoot = Path.Combine(directory, "security-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(hardenedRoot);
+                var hardenedStore = new RecordStore(Path.Combine(hardenedRoot, "records.json"));
+                string predictableTemporary = hardenedStore.FilePath + ".tmp"; File.WriteAllText(predictableTemporary, "sentinel", Encoding.UTF8);
+                hardenedStore.Save(new Database());
+                Check(File.ReadAllText(predictableTemporary, Encoding.UTF8) == "sentinel"
+                    && Directory.GetFiles(hardenedRoot, ".records.json.*.tmp").Length == 0,
+                    "Atomic save uses unpredictable temporary file and cleans it");
+                var oversizedStore = new RecordStore(Path.Combine(hardenedRoot, "oversized.json"));
+                using (var oversized = new FileStream(oversizedStore.FilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    oversized.SetLength(RecordStore.MaxDataBytes + 1L);
+                Check(Rejects(delegate { oversizedStore.Load(); }), "Oversized data rejected before JSON parsing");
+                var invalidUtf8Store = new RecordStore(Path.Combine(hardenedRoot, "invalid-utf8.json"));
+                File.WriteAllBytes(invalidUtf8Store.FilePath, new byte[] { 0x7B, 0xFF, 0x7D });
+                Check(Rejects(delegate { invalidUtf8Store.Load(); }), "Invalid UTF-8 data rejected");
+                var nestedStore = new RecordStore(Path.Combine(hardenedRoot, "nested.json"));
+                File.WriteAllText(nestedStore.FilePath, "{\"Version\":1,\"Records\":[],\"Unknown\":" + new string('[', 40) + "0" + new string(']', 40) + "}", Encoding.UTF8);
+                Check(Rejects(delegate { nestedStore.Load(); }), "Excessively nested JSON rejected");
                 string csv = RecordStore.Csv(db);
                 Check(csv.StartsWith("日期,复杂数量") && csv.Contains("2026-09-25,11,12,13,91.4"), "CSV consistent with weighted data");
                 File.WriteAllText(store.FilePath, "{broken");
@@ -959,4 +1010,5 @@ namespace MuYu.DailyTracker
             catch (Exception ex) { File.WriteAllText(report, ex.ToString(), Encoding.UTF8); Console.Error.WriteLine(ex); return 1; }
         }
     }
+#endif
 }
